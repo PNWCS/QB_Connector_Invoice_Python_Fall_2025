@@ -1,38 +1,53 @@
-"""QuickBooks COM gateway for invoices.
+"""
+QuickBooks COM gateway for invoices.
 
-This module communicates with QuickBooks Desktop via the QBXML Request Processor
-COM interface (pywin32). It allows querying invoices and, optionally, creating
-customers and items when needed.
+Auto-detects a working Item and uses it for invoice creation.
+Never depends on 'Services' or 'Sales' existing.
 """
 
 from __future__ import annotations
 import xml.etree.ElementTree as ET
 from contextlib import contextmanager
-from typing import Iterator, List
+from typing import Iterator, List, Tuple
 from datetime import date, datetime
 
 try:
     import win32com.client  # type: ignore
-except ImportError:  # pragma: no cover
+except ImportError:
     win32com = None  # type: ignore
 
 from src.models import Invoice
 
-APP_NAME = "QuickBooks Invoice Connector"
+APP_NAME = "Quickbooks Connector"
 
+
+# -------------------------
+# XML Escape Helper
+# -------------------------
+def _escape_xml(value: str) -> str:
+    """Safe XML escaping (ElementTree has no escape())."""
+    return (
+        str(value)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&apos;")
+    )
 
 
 def _require_win32com() -> None:
-    """Ensure the pywin32 library is available."""
     if win32com is None:
-        raise RuntimeError("pywin32 is required to communicate with QuickBooks Desktop.")
+        raise RuntimeError(
+            "pywin32 is required to communicate with QuickBooks Desktop."
+        )
 
 
 @contextmanager
-def _qb_session() -> Iterator[tuple[object, object]]:
-    """Context manager for safely opening and closing a QuickBooks session."""
+def _qb_session() -> Iterator[Tuple[object, object]]:
+    """Open/close a QuickBooks RPC session."""
     _require_win32com()
-    session = win32com.client.Dispatch("QBXMLRP2.RequestProcessor")
+    session = win32com.client.Dispatch("QBXMLRP2.RequestProcessor")  # type: ignore[attr-defined]
     session.OpenConnection2("", APP_NAME, 1)
     ticket = session.BeginSession("", 0)
     try:
@@ -45,74 +60,77 @@ def _qb_session() -> Iterator[tuple[object, object]]:
 
 
 def _parse_response(raw_xml: str) -> ET.Element:
-    """Parse and validate a QuickBooks QBXML response."""
     root = ET.fromstring(raw_xml)
     response = root.find(".//*[@statusCode]")
     if response is None:
-        raise RuntimeError("QuickBooks response missing status information.")
-    status_code = int(response.get("statusCode", "0"))
-    status_message = response.get("statusMessage", "")
-    if status_code not in (0, 1):  # 0=OK, 1=No results
-        raise RuntimeError(f"QuickBooks error {status_code}: {status_message}")
+        raise RuntimeError("QuickBooks response missing statusCode.")
+
+    code = int(response.get("statusCode", "0"))
+    msg = response.get("statusMessage", "") or ""
+
+    if code not in (0, 1):
+        raise RuntimeError(f"QuickBooks error {code}: {msg}")
+
     return root
 
 
-def _send_qbxml(qbxml: str) -> ET.Element:
-    """Send QBXML to QuickBooks and return parsed XML root."""
+def _send_qbxml(xml: str) -> ET.Element:
     with _qb_session() as (session, ticket):
-        print(f"Sending QBXML:\n{qbxml}")
-        raw_response = session.ProcessRequest(ticket, qbxml)
-        print(f"Received QBXML:\n{raw_response}")
-    return _parse_response(raw_response)
+        raw = session.ProcessRequest(ticket, xml)  # type: ignore[attr-defined]
+    return _parse_response(raw)
 
 
-
-def fetch_invoices(company_file: str | None = None) -> List[Invoice]:
-    """Fetch all invoices from QuickBooks (deduplicated by invoice number + customer)."""
-    qbxml = (
-        '<?xml version="1.0"?>\n'
-        '<?qbxml version="13.0"?>\n'
-        "<QBXML>\n"
-        '  <QBXMLMsgsRq onError="stopOnError">\n'
-        "    <InvoiceQueryRq>\n"
-        "      <IncludeLineItems>false</IncludeLineItems>\n"
-        "    </InvoiceQueryRq>\n"
-        "  </QBXMLMsgsRq>\n"
-        "</QBXML>"
-    )
+# ---------------------------------------------------------
+# Fetch Invoices
+# ---------------------------------------------------------
+def fetch_invoices() -> List[Invoice]:
+    qbxml = """<?xml version="1.0"?>
+<?qbxml version="13.0"?>
+<QBXML>
+ <QBXMLMsgsRq onError="stopOnError">
+  <InvoiceQueryRq>
+    <IncludeLineItems>false</IncludeLineItems>
+  </InvoiceQueryRq>
+ </QBXMLMsgsRq>
+</QBXML>"""
 
     root = _send_qbxml(qbxml)
+
     invoices: List[Invoice] = []
-    seen_keys = set()  # <-- Track unique (customer, invoice_number)
+    seen: set[tuple[str, str]] = set()
 
-    for inv_ret in root.findall(".//InvoiceRet"):
-        record_id = inv_ret.findtext("Memo") or inv_ret.findtext("RefNumber")
-        customer = (inv_ret.findtext("CustomerRef/FullName") or "").strip()
-        invoice_number = (inv_ret.findtext("RefNumber") or "").strip()
-        date_str = inv_ret.findtext("TxnDate")
-        invoice_date = date.fromisoformat(date_str) if date_str else date.today()
-        amount_str = inv_ret.findtext("Subtotal") or inv_ret.findtext("Amount") or "0"
+    for inv in root.findall(".//InvoiceRet"):
+        record_id = inv.findtext("Memo") or inv.findtext("RefNumber") or ""
+        customer = (inv.findtext("CustomerRef/FullName") or "").strip()
+        number = (inv.findtext("RefNumber") or "").strip()
+        date_str = inv.findtext("TxnDate")
+        amount_str = inv.findtext("Amount") or inv.findtext("Subtotal") or "0"
 
-        try:
-            invoice_amount = float(amount_str)
-        except ValueError:
-            invoice_amount = 0.0
-
-        if not record_id or not invoice_number or not customer:
+        if not record_id or not number or not customer:
             continue
 
-        key = (customer.lower(), invoice_number)
-        if key in seen_keys:
-            continue  # Skip duplicates
-        seen_keys.add(key)
+        key = (customer.lower(), number)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        try:
+            d = date.fromisoformat(date_str) if date_str else date.today()
+        except Exception:
+            d = date.today()
+
+        try:
+            amt = float(amount_str)
+        except Exception:
+            amt = 0.0
 
         invoices.append(
             Invoice(
                 record_id=record_id,
                 customer=customer,
-                invoice_number=invoice_number,
-                invoice_date=invoice_date,
-                invoice_amount=invoice_amount,
+                invoice_number=number,
+                invoice_date=d,
+                invoice_amount=amt,
                 source="quickbooks",
             )
         )
@@ -121,53 +139,153 @@ def fetch_invoices(company_file: str | None = None) -> List[Invoice]:
     return invoices
 
 
-
-
-def add_customer(customer_name: str) -> None:
-    """Create a customer in QuickBooks if missing."""
-    if not customer_name:
-        raise ValueError("Customer name is required to create a customer.")
-    qbxml = f"""<?xml version="1.0"?>
+# ---------------------------------------------------------
+# Item Selection / Creation
+# ---------------------------------------------------------
+def _get_first_item_name() -> str:
+    """Return name of first available item; create AutoItem if none exist."""
+    qbxml = """<?xml version="1.0"?>
 <?qbxml version="13.0"?>
 <QBXML>
-  <QBXMLMsgsRq onError="stopOnError">
-    <CustomerAddRq>
-      <CustomerAdd>
-        <Name>{customer_name}</Name>
-      </CustomerAdd>
-    </CustomerAddRq>
-  </QBXMLMsgsRq>
+ <QBXMLMsgsRq onError="stopOnError">
+  <ItemQueryRq/>
+ </QBXMLMsgsRq>
 </QBXML>"""
-    _send_qbxml(qbxml)
-    print(f" Created customer '{customer_name}' in QuickBooks.")
 
+    root = _send_qbxml(qbxml)
 
-def add_item_service(item_name: str):
-    """Create a service item in QuickBooks if it doesn't exist."""
-    qbxml = f"""<?xml version="1.0"?>
+    items = (
+        root.findall(".//ItemInventoryRet")
+        + root.findall(".//ItemNonInventoryRet")
+        + root.findall(".//ItemServiceRet")
+    )
+
+    if items:
+        name = items[0].findtext("Name") or "AutoItem"
+        print(f"Using existing item: {name}")
+        return name
+
+    # Create fallback item
+    create_xml = """<?xml version="1.0"?>
 <?qbxml version="13.0"?>
 <QBXML>
-  <QBXMLMsgsRq onError="stopOnError">
-    <ItemServiceAddRq>
-      <ItemServiceAdd>
-        <Name>{item_name}</Name>
-        <SalesOrPurchase>
-          <Desc>Auto-created by Invoice Sync</Desc>
-          <AccountRef><FullName>Sales</FullName></AccountRef>
-        </SalesOrPurchase>
-      </ItemServiceAdd>
-    </ItemServiceAddRq>
-  </QBXMLMsgsRq>
+ <QBXMLMsgsRq onError="stopOnError">
+  <ItemNonInventoryAddRq>
+   <ItemNonInventoryAdd>
+    <Name>AutoItem</Name>
+    <IncomeAccountRef><FullName>Income</FullName></IncomeAccountRef>
+   </ItemNonInventoryAdd>
+  </ItemNonInventoryAddRq>
+ </QBXMLMsgsRq>
 </QBXML>"""
-    _send_qbxml(qbxml)
-    print(f"Created missing service item '{item_name}' in QuickBooks.")
 
-
-if __name__ == "__main__":  
     try:
-        invoices = fetch_invoices()
-        for inv in invoices:
-            print(inv)
-        print(f" Total invoices fetched: {len(invoices)}")
-    except Exception as e:
-        print(f" Error fetching invoices: {e}")
+        _send_qbxml(create_xml)
+        print("Created AutoItem in QuickBooks.")
+    except Exception as exc:
+        print(f"Failed to create AutoItem: {exc}")
+
+    return "AutoItem"
+
+
+# ---------------------------------------------------------
+# Customer Creation
+# ---------------------------------------------------------
+def add_customer(name: str) -> None:
+    """Create a customer in QuickBooks if missing (best-effort)."""
+    if not name:
+        return
+
+    name_xml = _escape_xml(name)
+
+    xml = f"""<?xml version="1.0"?>
+<?qbxml version="13.0"?>
+<QBXML>
+ <QBXMLMsgsRq onError="continueOnError">
+  <CustomerAddRq>
+   <CustomerAdd>
+    <Name>{name_xml}</Name>
+   </CustomerAdd>
+  </CustomerAddRq>
+ </QBXMLMsgsRq>
+</QBXML>"""
+
+    try:
+        _send_qbxml(xml)
+        print(f"Customer '{name}' verified or created.")
+    except Exception as exc:
+        print(f"Customer '{name}' creation issue: {exc}")
+
+
+# ---------------------------------------------------------
+# Batch Invoice Add
+# ---------------------------------------------------------
+def add_invoices_batch(invoices: List[Invoice]) -> None:
+    if not invoices:
+        print("No invoices to add.")
+        return
+
+    item_name = _get_first_item_name()
+
+    existing = fetch_invoices()
+    existing_keys = {(i.customer.lower(), i.invoice_number) for i in existing}
+
+    new = [
+        inv
+        for inv in invoices
+        if (inv.customer.lower(), inv.invoice_number) not in existing_keys
+    ]
+
+    if not new:
+        print("No new invoices to add.")
+        return
+
+    # Ensure customers exist
+    for cust in sorted({inv.customer for inv in new}):
+        add_customer(cust)
+
+    requests: List[str] = []
+
+    for inv in new:
+        d = (
+            inv.invoice_date.strftime("%Y-%m-%d")
+            if isinstance(inv.invoice_date, (date, datetime))
+            else str(inv.invoice_date)
+        )
+
+        cust = _escape_xml(inv.customer)
+        refnum = _escape_xml(inv.invoice_number)
+        memo = _escape_xml(inv.record_id)
+        item = _escape_xml(item_name)
+
+        requests.append(
+            f"""
+    <InvoiceAddRq>
+      <InvoiceAdd>
+        <CustomerRef><FullName>{cust}</FullName></CustomerRef>
+        <TxnDate>{d}</TxnDate>
+        <RefNumber>{refnum}</RefNumber>
+        <Memo>{memo}</Memo>
+        <InvoiceLineAdd>
+          <ItemRef><FullName>{item}</FullName></ItemRef>
+          <Quantity>1</Quantity>
+          <Amount>{inv.invoice_amount:.2f}</Amount>
+        </InvoiceLineAdd>
+      </InvoiceAdd>
+    </InvoiceAddRq>
+"""
+        )
+
+    full_xml = f"""<?xml version="1.0"?>
+<?qbxml version="13.0"?>
+<QBXML>
+ <QBXMLMsgsRq onError="continueOnError">
+  {"".join(requests)}
+ </QBXMLMsgsRq>
+</QBXML>"""
+
+    try:
+        _send_qbxml(full_xml)
+        print(f"Successfully added {len(new)} invoices.")
+    except Exception as exc:
+        print(f"Error adding invoices: {exc}")

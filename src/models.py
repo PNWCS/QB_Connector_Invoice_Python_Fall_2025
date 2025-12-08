@@ -5,24 +5,22 @@ from dataclasses import dataclass, field
 from typing import Literal, Optional
 from datetime import date
 
-# Define literal types for clarity
 SourceLiteral = Literal["excel", "quickbooks"]
 ConflictReason = Literal["data_mismatch", "missing_in_excel", "missing_in_quickbooks"]
 
 
 @dataclass(slots=True)
 class Invoice:
-    """Represents a single invoice from either Excel or QuickBooks."""
+    """Represents a single invoice from Excel or QuickBooks."""
 
-    record_id: str           # Excel "Child ID" ↔ QuickBooks "Memo"
-    customer: str            # Customer name
-    invoice_number: str      # Invoice reference number
-    invoice_date: date       # Invoice date
-    invoice_amount: float    # Invoice total amount
-    source: SourceLiteral    # Origin of this record ("excel" or "quickbooks")
+    record_id: str
+    customer: str
+    invoice_number: str
+    invoice_date: date
+    invoice_amount: float
+    source: SourceLiteral
 
     def __str__(self) -> str:
-        """Readable string representation of this invoice."""
         return (
             f"Invoice(id={self.record_id}, customer={self.customer}, "
             f"number={self.invoice_number}, date={self.invoice_date}, "
@@ -32,7 +30,7 @@ class Invoice:
 
 @dataclass(slots=True)
 class Conflict:
-    """Describes a mismatch or missing invoice between Excel and QuickBooks."""
+    """Describes an ID present in both sources but with mismatching data."""
 
     record_id: str
     excel_data: Optional[Invoice]
@@ -42,9 +40,15 @@ class Conflict:
 
 @dataclass(slots=True)
 class ComparisonReport:
-    """Groups comparison results between Excel and QuickBooks."""
+    """
+    Container for comparison results:
+      - same_invoice: matching invoices in Excel and QB
+      - excel_only: invoices only in Excel
+      - qb_only: invoices only in QuickBooks
+      - conflicts: invoices with same ID but mismatching fields
+    """
 
-    same_same: list[Invoice] = field(default_factory=list)
+    same_invoice: list[Invoice] = field(default_factory=list)
     excel_only: list[Invoice] = field(default_factory=list)
     qb_only: list[Invoice] = field(default_factory=list)
     conflicts: list[Conflict] = field(default_factory=list)
