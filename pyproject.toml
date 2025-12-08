@@ -18,6 +18,8 @@ dependencies = [
     "pyinstaller (>=6.16.0,<7.0.0)"
 ]
 
+package-mode = false
+
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
