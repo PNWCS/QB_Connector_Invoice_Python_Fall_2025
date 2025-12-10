@@ -1,0 +1,41 @@
+{
+    "status": "success",
+    "generated_at": "2025-12-01T19:51:42+00:00",
+    "same_invoice": 1,
+    "added_invoices": [
+        {
+            "record_id": "5000",
+            "customer": "ExcelOnly",
+            "invoice_number": "EX-500",
+            "invoice_date": "2023-01-15",
+            "invoice_amount": 5040.0
+        }
+    ],
+    "conflicts": [
+        {
+            "record_id": "7656",
+            "reason": "data_mismatch",
+            "excel_customer": "NBT Group LTD",
+            "excel_invoice_number": "23-0401",
+            "excel_invoice_date": "2023-09-13",
+            "excel_invoice_amount": 13100.0,
+            "qb_customer": "NBT Group LTD",
+            "qb_invoice_number": "23-0401",
+            "qb_invoice_date": "2023-09-13",
+            "qb_invoice_amount": 0.0
+        },
+        {
+            "record_id": "8000",
+            "reason": "missing_in_excel",
+            "excel_customer": null,
+            "excel_invoice_number": null,
+            "excel_invoice_date": null,
+            "excel_invoice_amount": null,
+            "qb_customer": "QBOnlyCustomer",
+            "qb_invoice_number": "QB-8000",
+            "qb_invoice_date": "2024-02-20",
+            "qb_invoice_amount": 0.0
+        }
+    ],
+    "error": null
+}

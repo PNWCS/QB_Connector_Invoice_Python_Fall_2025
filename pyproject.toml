@@ -3,10 +3,11 @@ name = "quickbook-connector"
 version = "0.1.0"
 description = ""
 authors = [
-    {name = "Your Name",email = "you@example.com"}
+    { name = "Your Name", email = "you@example.com" }
 ]
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
+
 dependencies = [
     "openpyxl (>=3.1.5,<4.0.0)",
     "pywin32 (>=311,<312)",
@@ -18,6 +19,13 @@ dependencies = [
     "pyinstaller (>=6.16.0,<7.0.0)"
 ]
 
+[tool.poetry]
+# Disable packaging mode so Poetry doesn't expect a package folder
+package-mode = false
+
+# Location of your source code
+# (This prevents Poetry from searching for a package folder)
+packages = []
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
